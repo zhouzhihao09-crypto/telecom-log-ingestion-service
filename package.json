@@ -1,0 +1,30 @@
+{
+  "name": "telecom-log-ingestion-service",
+  "version": "1.0.0",
+  "description": "A telecom-style high-throughput log ingestion service using Fastify and PostgreSQL",
+  "license": "ISC",
+  "type": "commonjs",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc && node -e \"require('fs').cpSync('src/db/migrations','dist/db/migrations',{recursive:true,force:true})\"",
+    "start": "node dist/server.js",
+    "generate": "tsx scripts/generate-logs.ts",
+    "benchmark": "tsx scripts/benchmark.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "fastify": "^5.0.0",
+    "pg": "^8.12.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/pg": "^8.6.6",
+    "pg-mem": "^3.0.14",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.0"
+  }
+}
