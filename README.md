@@ -38,15 +38,12 @@ flowchart LR
         Gen["Log Generator<br/>scripts/benchmark.ts"]
     end
 
-    subgraph SMS_DATA["Event Types"]
-        SMS["SMS"]
-        DATA["DATA_USAGE"]
+    subgraph Events["Incoming Events"]
+        SMS["SMS event"]
+        DATA["DATA_USAGE event"]
     end
 
-    SMS_Data[SMS]
-    Data_Data[DATA_USAGE]
-
-    subgraph API_Layer["Fastify API Layer"]
+    subgraph API_Layer["Fastify API (Port 3000)"]
         API["POST /api/events"]
     end
 
@@ -57,17 +54,19 @@ flowchart LR
     end
 
     subgraph Storage["Storage"]
-        PG["PostgreSQL<br/><i>telecom_events table</i>"]
+        PG["PostgreSQL 16<br/><i>telecom_events table</i>"]
     end
 
     Gen -->|"HTTP POST /api/events"| API
-    SMS -->|"events"| API
-    DATA -->|"events"| API
+    SMS --> API
+    DATA --> API
     API --> Val
     Val --> Buf
     Buf -->|"flush on size or interval"| Batch
     Batch --> PG
 ```
+
+*(Rendered as a diagram on GitHub/GitLab — if your viewer doesn't support Mermaid, see the request flow below.)*
 
 **Request flow:**
 
