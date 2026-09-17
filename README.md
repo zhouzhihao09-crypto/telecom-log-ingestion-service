@@ -1,148 +1,252 @@
 # Telecom Log Ingestion Service
 
-A high-throughput Node.js/TypeScript service that simulates ingestion of telecom SMS and mobile data usage events. Built with Fastify, PostgreSQL, and Docker.
+A high-throughput, batch-oriented ingestion pipeline for telecom SMS and mobile data usage events. Built with Node.js, Fastify, TypeScript, and PostgreSQL — deployed via Docker Compose.
 
-## What I Built
+## Overview
 
-A complete log ingestion pipeline that accepts, validates, batches, and stores telecom events at high throughput:
+This service accepts telecom event logs over HTTP, validates them, buffers them in memory, and writes them to PostgreSQL in configurable batches. It is designed for **throughput** (52K+ events/sec on a local Docker setup) while keeping API latency low through asynchronous buffering.
 
-- **Fastify ingestion API** — `POST /api/events` accepts single events or batches; `GET /health` reports liveness
-- **TypeScript event validation** — runtime type guards ensure SMS and DATA_USAGE events are well-formed before storage
-- **Asynchronous in-memory buffering** — events are buffered after acceptance and flushed in the background, keeping API response times low
-- **Configurable batch processing** — buffer flushes when `BATCH_SIZE` events accumulate **or** `BATCH_INTERVAL_MS` milliseconds elapse (configurable via env vars)
-- **PostgreSQL bulk inserts** — each flush becomes a single `INSERT ... VALUES (...) ON CONFLICT DO NOTHING` statement instead of one query per event
-- **Database indexes** — B-tree indexes on `subscriber_id`, `timestamp`, and `(event_type, timestamp)`; GIN index on JSONB `payload`
-- **Idempotent event ingestion** — `event_id` has a UNIQUE constraint; duplicates are silently skipped via `ON CONFLICT DO NOTHING`
-- **Docker Compose** — one command starts the app and PostgreSQL with automatic schema initialization
-- **Automated tests** — 19 tests using pg-mem (in-memory PostgreSQL, no external services needed)
-- **Throughput benchmark** — generates configurable event volumes and reports events/sec, latency, and success/failure counts
+### Key capabilities
+
+- **HTTP ingestion** of single events or batches (`POST /api/events`)
+- **Runtime type validation** — SMS and DATA_USAGE events are checked before storage
+- **Async in-memory buffering** — the API returns `202 Accepted` immediately; inserts happen in the background
+- **Configurable batching** — flush by event count (`BATCH_SIZE`) or time (`BATCH_INTERVAL_MS`)
+- **Bulk PostgreSQL inserts** — each batch becomes a single `INSERT ... ON CONFLICT DO NOTHING`
+- **Idempotent ingestion** — duplicate `event_id` values are silently dropped
+- **PostgreSQL parameter-limit handling** — large batches are automatically chunked to stay under the 65,535-parameter limit
+- **Dockerised** — one-command startup with automatic schema initialization
+- **Tested** — 19 unit/integration tests using an in-memory PostgreSQL emulator
+
+## Tech Stack
+
+| Category | Technology |
+|---|---|
+| Runtime | Node.js 20 |
+| Framework | Fastify 5 |
+| Language | TypeScript 5 |
+| Database | PostgreSQL 16 |
+| Containerisation | Docker Compose |
+| Testing | Vitest + pg-mem (in-memory PostgreSQL) |
+| Logging | Pino |
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    subgraph Source
+        Gen["Log Generator<br/>scripts/benchmark.ts"]
+    end
+
+    subgraph SMS_DATA["Event Types"]
+        SMS["SMS"]
+        DATA["DATA_USAGE"]
+    end
+
+    SMS_Data[SMS]
+    Data_Data[DATA_USAGE]
+
+    subgraph API_Layer["Fastify API Layer"]
+        API["POST /api/events"]
+    end
+
+    subgraph Processing["Processing Pipeline"]
+        Val["Validation<br/><i>src/utils/validate.ts</i>"]
+        Buf["Async In-Memory Buffer<br/><i>src/services/ingestionService.ts</i>"]
+        Batch["Batch Processor<br/><i>Bulk INSERT with chunking</i>"]
+    end
+
+    subgraph Storage["Storage"]
+        PG["PostgreSQL<br/><i>telecom_events table</i>"]
+    end
+
+    Gen -->|"HTTP POST /api/events"| API
+    SMS -->|"events"| API
+    DATA -->|"events"| API
+    API --> Val
+    Val --> Buf
+    Buf -->|"flush on size or interval"| Batch
+    Batch --> PG
 ```
-┌──────────────────┐
-│  Log Generator   │   scripts/generate-logs.ts
-│  or  Benchmark   │   scripts/benchmark.ts
-└────────┬─────────┘
-         │ HTTP POST /api/events
-         ▼
-┌──────────────────┐
-│  Fastify API     │   src/server.ts, src/routes/ingest.ts
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│ Event Validation │   src/utils/validate.ts
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│  Async Buffer    │   src/services/ingestionService.ts
-│  [in-memory]     │   Flushes by size OR time
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│ Batch Processor  │   Bulk INSERT with parameterised query
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│  PostgreSQL      │   docker-compose.yml
-│                  │
-│  +--> Indexes    │
-│  +--> Queries     │
-└──────────────────┘
+
+**Request flow:**
+
+1. A producer (log generator, benchmark, or external system) sends events to `POST /api/events`
+2. Fastify accepts both `SMS` and `DATA_USAGE` event types
+3. Each event is validated against its type schema (runtime type guards)
+4. Valid events are pushed into an in-memory async buffer
+5. The buffer flushes on a size threshold (`BATCH_SIZE`) or time interval (`BATCH_INTERVAL_MS` — whichever comes first)
+6. Each flush batch is chunked if necessary and bulk-inserted into PostgreSQL
+7. Duplicates are silently ignored via `ON CONFLICT DO NOTHING`
+
+## API
+
+### `GET /health`
+
+Service and database liveness check.
+
+```bash
+curl localhost:3000/health
 ```
 
-## Performance Benchmark
+Response `200 OK`:
 
-Environment:
+```json
+{ "status": "ok", "database": "ok" }
+```
 
-* Docker Compose (Node.js 20 Alpine, PostgreSQL 16 Alpine)
-* 100,000 events
-* Batch size: 500
-* Concurrency: 5
+### `POST /api/events`
 
-Result:
+Accepts a single event, a batch object (`{"events": [...]}`), or a JSON array.
 
-| Metric                 |            Result |
-| ---------------------- | ----------------: |
-| Events                 |           100,000 |
-| Batches                |               200 |
-| Batch size             |               500 |
-| Concurrency            |                 5 |
-| Successful requests    |               200 |
-| Failed requests        |                 0 |
-| Duration               |            1.91 s |
-| Throughput             | 52,247 events/sec |
-| Database rows verified |           100,000 |
+**Single SMS event:**
 
-This is a **local Docker benchmark** and should not be interpreted as production telecom-scale capacity. Real telecom systems process millions of events per second using distributed infrastructure (see [Scaling Further](#scaling-further)).
+```bash
+curl -X POST localhost:3000/api/events \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "eventId": "sms-001",
+    "eventType": "SMS",
+    "timestamp": "2026-09-17T10:00:00.000Z",
+    "subscriberId": "S1234567A",
+    "sourceNumber": "+6591234567",
+    "destinationNumber": "+6587654321",
+    "messageSize": 120,
+    "status": "DELIVERED"
+  }'
+```
 
-### PostgreSQL Parameter Limit & Batch Chunking
+**Batch of events:**
 
-PostgreSQL limits a prepared statement (extended protocol) to 65,535 bound parameters. Because each event row in the bulk `INSERT` uses five parameters (`event_id`, `event_type`, `timestamp`, `subscriber_id`, `payload`), a single query can safely hold at most 13,107 rows. The ingestion service therefore **chunks** large flush batches into sub-13,107-row groups before writing to PostgreSQL, keeping every query under the limit.
+```bash
+curl -X POST localhost:3000/api/events \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "events": [
+      { "eventId": "sms-002", "eventType": "SMS", "timestamp": "2026-09-17T10:00:01.000Z", "subscriberId": "S1234567A", "sourceNumber": "+6591234567", "destinationNumber": "+6587654321", "messageSize": 95, "status": "DELIVERED" },
+      { "eventId": "bmd-001", "eventType": "DATA_USAGE", "timestamp": "2026-09-17T10:00:02.000Z", "subscriberId": "S1234567A", "bytesUsed": 1048576, "networkType": "5G" }
+    ]
+  }'
+```
 
-Additionally, the `INSERT ... RETURNING event_id` clause was removed. Since the service only needs the count of inserted rows (not the actual row data), relying on `rowCount` avoids an unnecessary result set, reducing memory allocation and network round-trip overhead per chunk.
+Response `202 Accepted`:
 
-Benchmark results depend on:
-
-- **Hardware** — CPU, disk I/O, and memory affect PostgreSQL write speed
-- **Docker configuration** — container resource limits, volume drivers
-- **PostgreSQL configuration** — `shared_buffers`, `wal_buffers`, checkpoint settings
-- **Batch size** — larger batches reduce query count but increase memory and latency
-- **Concurrency** — parallel requests keep the pipeline saturated
-- **Workload** — event composition (SMS vs DATA_USAGE) and payload size
-
-## Why Batching?
-
-Without batching, inserting N events requires N separate database queries. Each query involves:
-
-1. Network round-trip to PostgreSQL
-2. Query parsing and planning in the database
-3. Transaction and WAL (write-ahead log) overhead
-4. Index update per row
-
-With batching (e.g., `BATCH_SIZE=500`), those same N events are inserted with N/500 queries. A batch of 500 events becomes **1 database round-trip** instead of 500. This dramatically reduces network overhead and lets PostgreSQL optimise the write path (bulk WAL writes, bulk index updates).
-
-The buffer also decouples the API from the database: the HTTP endpoint returns `202 Accepted` immediately, and the actual insert happens asynchronously. This keeps API latency low even under heavy write load.
+```json
+{ "accepted": 2 }
+```
 
 ## Database Design
 
-The `telecom_events` table uses a **hybrid schema**:
+The `telecom_events` table uses a **hybrid schema** — common query fields as dedicated columns, event-specific fields in JSONB.
 
 | Column | Type | Purpose |
 |---|---|---|
 | `id` | `SERIAL PK` | Internal auto-increment primary key |
 | `event_id` | `TEXT UNIQUE` | Business event identifier — used for idempotency |
-| `event_type` | `TEXT` | `"SMS"` or `"DATA_USAGE"` — indexed with timestamp |
-| `timestamp` | `TIMESTAMPTZ` | Event occurrence time — indexed |
-| `subscriber_id` | `TEXT` | Subscriber identifier — indexed for telecom queries |
-| `payload` | `JSONB` | Event-specific fields (source/dest numbers, bytes used, etc.) |
+| `event_type` | `TEXT` | `"SMS"` or `"DATA_USAGE"` |
+| `timestamp` | `TIMESTAMPTZ` | Event occurrence time |
+| `subscriber_id` | `TEXT` | Subscriber identifier |
+| `payload` | `JSONB` | Event-specific fields (numbers, message size, bytes, network type) |
 | `created_at` | `TIMESTAMPTZ` | Ingestion timestamp — defaults to `NOW()` |
 
-### Design decisions
+### Indexes
 
-- **Common fields as indexed columns**: Telecom queries almost always filter by `subscriber_id`, `timestamp`, or `event_type`. Storing these in dedicated columns with B-tree indexes enables fast range scans and lookups.
-- **Event-specific fields in JSONB**: New event types can be added without schema migrations. The GIN index on `payload` allows querying JSON fields when needed.
-- **`event_id` is UNIQUE**: Enforced at the database level. This is the foundation of idempotency.
-- **`ON CONFLICT DO NOTHING`**: When a duplicate `event_id` is inserted, PostgreSQL silently skips it rather than raising an error. This handles the real-world scenario where the same event might be delivered multiple times due to network retries.
+| Index | Type | Columns | Purpose |
+|---|---|---|---|
+| `idx_events_subscriber_id` | B-tree | `subscriber_id` | Subscriber-level queries |
+| `idx_events_timestamp` | B-tree | `timestamp` | Time-range queries |
+| `idx_events_type_timestamp` | B-tree | `(event_type, timestamp)` | Type + time window queries |
+| `idx_events_payload_gin` | GIN | `payload` | JSONB field lookups |
 
-## Scaling Further
+The `UNIQUE` constraint on `event_id` automatically creates an index used for idempotency checks.
 
-This project demonstrates ingestion concepts on a single machine. A real telecom-scale deployment that processes millions of events per second could evolve this architecture by adding:
+## Async Buffering & Batch Processing
 
-1. **A durable message broker** (e.g., Apache Kafka) between the API and the batch processor — decouples ingestion from storage and provides replayability
-2. **Multiple ingestion workers** — run several app instances behind a load balancer, each with its own buffer
-3. **Horizontal scaling** — partition events by `subscriber_id` hash across multiple database shards
-4. **Database partitioning** — partition the `telecom_events` table by `timestamp` (time-based partitioning) for efficient archival and querying
-5. **Distributed observability** — OpenTelemetry tracing, Prometheus metrics, and structured logging across all components
-6. **Stream processing** — Apache Flink or ksqlDB for real-time analytics on the event stream
+After a request is accepted, events enter an in-memory buffer (`IngestionService`). The buffer flushes when either:
 
-> These are **architectural next steps**, not part of the current implementation. This project intentionally keeps things simple to demonstrate the core concepts clearly.
+- **`BATCH_SIZE`** events have accumulated (default: 500), or
+- **`BATCH_INTERVAL_MS`** milliseconds have elapsed since the last flush (default: 100ms)
 
-## How to Run
+Each flush produces a single `INSERT ... VALUES (...) ON CONFLICT DO NOTHING` statement. For 100,000 events at batch size 500, this means 200 database round-trips instead of 100,000.
+
+The API returns `202 Accepted` immediately, decoupling request handling from database I/O. This keeps API latency in the sub-millisecond range even when the database is under heavy write load.
+
+## Idempotency
+
+Every event carries an `event_id` with a `UNIQUE` constraint at the database level. The bulk insert uses `ON CONFLICT DO NOTHING`, so if the same `event_id` is received twice (e.g., due to a network retry), PostgreSQL silently drops the duplicate. The service never returns an error for duplicates.
+
+## Engineering Challenges
+
+### PostgreSQL parameter limit & batch chunking
+
+PostgreSQL enforces a 65,535-parameter limit per prepared statement (extended protocol). Since each event row requires 5 bound parameters (`event_id`, `event_type`, `timestamp`, `subscriber_id`, `payload`), a single `INSERT` cannot safely exceed 13,107 rows.
+
+**Solution:** The `bulkInsert` method automatically splits large flush batches into chunks of at most 13,107 rows, issuing separate queries for each chunk. This prevents the `bind message has N parameter formats but 0 parameters` error that occurs when exceeding the limit.
+
+### Removed `RETURNING` clause
+
+The original implementation used `INSERT ... RETURNING event_id` to count inserted rows. This was replaced with `INSERT ...` relying on `rowCount`. Since the service only needs the count — not the actual row data — removing `RETURNING` avoids an unnecessary result set, reducing memory allocation and network overhead per chunk.
+
+### Idempotent event ingestion
+
+Duplicate event delivery is common in distributed systems (network retries, load balancer timeouts). The `UNIQUE` constraint on `event_id` combined with `ON CONFLICT DO NOTHING` ensures that duplicate events are silently ignored without errors or double-counting.
+
+### Async buffering
+
+Synchronous inserts would block the HTTP response until the database write completes. By buffering events in memory and flushing asynchronously, the API can return immediately (`202 Accepted`), keeping latency low under burst traffic.
+
+### Database indexing
+
+Telecom queries almost always filter by `subscriber_id`, `timestamp`, or `event_type`. Dedicated B-tree columns with indexes on these fields enable fast range scans and lookups. Event-specific fields are stored in a JSONB column with a GIN index, allowing new event types to be added without schema migrations.
+
+## Performance Benchmark
+
+**Local Docker benchmark** — `docker compose up --build` with the app and PostgreSQL containers running locally.
+
+| Metric | Result |
+|---|---|
+| Events | 100,000 |
+| Batches | 200 |
+| Batch size | 500 |
+| Concurrency | 5 |
+| Successful requests | 200 |
+| Failed requests | 0 |
+| Duration | 1.91 s |
+| Throughput | 52,247 events/sec |
+| Database rows verified | 100,000 |
+
+This benchmark runs on a single Docker host and demonstrates batched ingestion throughput, **not** production telecom capacity. Real telecom systems process millions of events per second across distributed infrastructure.
+
+Factors that affect results:
+
+- **Hardware** — CPU, disk I/O, and memory
+- **Docker configuration** — container resource limits, volume drivers
+- **PostgreSQL configuration** — `shared_buffers`, `wal_buffers`, checkpoint settings
+- **Batch size** — larger batches reduce query count but increase memory and latency
+- **Concurrency** — parallel requests keep the pipeline saturated
+
+## Testing
+
+```bash
+npm test
+```
+
+Uses [pg-mem](https://github.com/oguimbal/pg-mem) — an in-memory PostgreSQL emulator — so no external database is required.
+
+| Suite | Tests | Focus |
+|---|---|---|
+| `tests/health.test.ts` | 2 | Health endpoint and database connectivity |
+| `tests/ingest.test.ts` | 11 | Single/batch ingestion, validation, idempotency |
+| `tests/batching.test.ts` | 6 | Buffer flushing by size, by interval, on shutdown, deduplication |
+
+**Result: 19/19 tests pass.**
+
+## How to Run Locally
 
 ### Prerequisites
 
 - Docker Desktop (with Docker Compose)
+- Node.js 20+ (for running tests and benchmarks without Docker)
 
 ### Start the service
 
@@ -180,48 +284,29 @@ npm run benchmark
 npm test
 ```
 
-Tests use [pg-mem](https://github.com/oguimbal/pg-mem) — an in-memory PostgreSQL emulator — so no external database is needed.
+### Configuration
 
-### Change batch size
-
-Set environment variables in `.env` (local development) or in the `environment` section of `docker-compose.yml`:
+Environment variables (in `.env` for local dev, or `environment` in `docker-compose.yml`):
 
 | Variable | Default | Description |
 |---|---|---|
 | `BATCH_SIZE` | `500` | Events per batch before forced flush |
 | `BATCH_INTERVAL_MS` | `100` | Max milliseconds between flushes |
+| `PORT` | `3000` | Server port |
+| `HOST` | `0.0.0.0` | Server bind address |
 
-## API
+## How I Would Scale This Further
 
-### `GET /health`
+This project is intentionally single-node to demonstrate core concepts. Scaling to telecom-grade capacity would build on the same architecture:
 
-Returns service and database health:
+1. **Message broker** — Introduce Apache Kafka between the API and the batch processor. Producers write to Kafka topics; consumers read and batch from the stream. This decouples ingestion from storage, provides durability and replayability.
+2. **Multiple ingestion workers** — Run several app instances behind a load balancer. Each maintains its own buffer and flushes independently, multiplying throughput.
+3. **Horizontal database scaling** — Partition events by `subscriber_id` hash across multiple PostgreSQL shards, or use Citus for distributed PostgreSQL.
+4. **Database partitioning** — Time-based partitioning of the `telecom_events` table (e.g., monthly partitions) for efficient archival, querying, and vacuuming.
+5. **Distributed observability** — OpenTelemetry tracing, Prometheus metrics, structured logging (Pino) across all components to monitor ingestion latency, batch sizes, and database health.
+6. **Stream processing** — Apache Flink or ksqlDB for real-time analytics on the event stream (aggregation, anomaly detection, enrichment).
 
-```json
-{ "status": "ok", "database": "ok" }
-```
-
-### `POST /api/events`
-
-Accepts a single event, a batch object, or an array:
-
-```bash
-# Single event
-curl -X POST localhost:3000/api/events \
-  -H 'Content-Type: application/json' \
-  -d '{"eventId":"sms-001","eventType":"SMS","timestamp":"2026-09-17T10:00:00.000Z","subscriberId":"S1234567A","sourceNumber":"+6591234567","destinationNumber":"+6587654321","messageSize":120,"status":"DELIVERED"}'
-
-# Batch
-curl -X POST localhost:3000/api/events \
-  -H 'Content-Type: application/json' \
-  -d '{"events":[{"eventId":"sms-001",...},{"eventId":"data-001",...}]}'
-```
-
-Response (202 Accepted):
-
-```json
-{ "accepted": 3 }
-```
+> These are **conceptual next steps**, not implemented here. This project focuses on demonstrating the core ingestion, batching, and storage patterns clearly.
 
 ## License
 
