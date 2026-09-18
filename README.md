@@ -2,6 +2,9 @@
 
 A high-throughput, batch-oriented ingestion pipeline for telecom SMS and mobile data usage events. Built with Node.js, Fastify, TypeScript, and PostgreSQL — deployed via Docker Compose.
 
+![Demo](docs/telecom-log-ingestion-demo.gif)
+*Demo: Service startup, event ingestion, batch processing, and database verification*
+
 ## Overview
 
 This service accepts telecom event logs over HTTP, validates them, buffers them in memory, and writes them to PostgreSQL in configurable batches. It is designed for **throughput** (52K+ events/sec on a local Docker setup) while keeping API latency low through asynchronous buffering.
@@ -306,6 +309,23 @@ This project is intentionally single-node to demonstrate core concepts. Scaling 
 6. **Stream processing** — Apache Flink or ksqlDB for real-time analytics on the event stream (aggregation, anomaly detection, enrichment).
 
 > These are **conceptual next steps**, not implemented here. This project focuses on demonstrating the core ingestion, batching, and storage patterns clearly.
+
+## Screenshots
+
+### API Ingestion
+Shows the service receiving a telecom SMS event through the actual API endpoint with a `202 Accepted` response.
+
+![API Ingestion](docs/images/api-ingestion.png)
+
+### Batch Processing
+Shows the asynchronous batch processing behavior using the project's log generator script (`npm run generate`), demonstrating events being buffered, batched (500 events per batch), and processed at ~3,125 events/sec.
+
+![Batch Processing](docs/images/batch-processing.png)
+
+### Database Results
+Shows synthetic events successfully stored in PostgreSQL, including the total count (5,003 events) and sample rows with both SMS and DATA_USAGE event types.
+
+![Database Results](docs/images/database-results.png)
 
 ## License
 
