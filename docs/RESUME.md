@@ -1,37 +1,45 @@
-# Resume Wording
+# Resume — Selected Projects
 
-Concise, resume-ready bullets for the Telecom Log Ingestion Service.
+Concise, resume-ready descriptions for portfolio inclusion.
 
-## Summary
+## Telecom Log Ingestion Service
 
-A batch-oriented log ingestion pipeline that accepts telecom SMS and data usage events over HTTP, validates them, buffers them in memory, and writes them to PostgreSQL in configurable batches — demonstrating systems engineering fundamentals: async I/O, bulk database writes, idempotency, and parameter-limit handling.
+A batch-oriented log ingestion pipeline that accepts telecom SMS and data usage events over HTTP, validates them, buffers them in memory, and writes them to PostgreSQL in configurable batches.
 
-## Key Results
+**Tech stack:** TypeScript, Node.js, Fastify, PostgreSQL, Docker Compose, pg-mem
 
-- **52,247 events/sec** in a local Docker benchmark processing 100,000 events with 0 failures
+**Key results:**
+- 52,247 events/sec in a local Docker benchmark processing 100,000 events with 0 failures
 - 19/19 automated tests passing
 
-## Technical Skills Demonstrated
+**Engineering work:**
+- Designed and implemented async in-memory buffering with configurable size/time-based flushing (BATCH_SIZE=500 or BATCH_INTERVAL_MS=100ms), reducing 100,000 individual database round-trips to 200 bulk INSERT statements
+- Solved PostgreSQL's 65,535-parameter-per-statement limit by chunking large batch inserts into 13,107-row groups; removed the unnecessary `RETURNING` clause to reduce result-set overhead
+- Built idempotent ingestion via `UNIQUE(event_id)` constraint and `ON CONFLICT DO NOTHING` to silently drop duplicates from network retries
+- Designed a hybrid PostgreSQL schema (dedicated B-tree columns + JSONB payload with GIN index) for telecom query patterns
+- Implemented comprehensive test suite (19 tests) using pg-mem in-memory PostgreSQL — no external database required
 
-| Skill | Details |
-|---|---|
-| **TypeScript** | Full backend in TypeScript with strict type guards for event validation |
-| **Node.js** | Async event loop handling — API returns `202 Accepted` immediately while inserts proceed in the background |
-| **Fastify** | HTTP API framework for `GET /health` and `POST /api/events` endpoints |
-| **PostgreSQL** | Hybrid schema (indexed columns + JSONB payload), B-tree and GIN indexes, `ON CONFLICT DO NOTHING` for idempotency |
-| **Docker** | Docker Compose setup with automatic schema initialization and health checks |
-| **Asynchronous buffering** | In-memory buffer decouples API response time from database write latency; flushes on size (`BATCH_SIZE=500`) or time (`BATCH_INTERVAL_MS=100`) |
-| **Batch processing** | Each buffer flush becomes a single bulk `INSERT` statement; 100,000 events = 200 round-trips instead of 100,000 |
-| **Idempotency** | `event_id` with `UNIQUE` constraint + `ON CONFLICT DO NOTHING` silently drops duplicates from network retries |
-| **PostgreSQL parameter-limit handling** | Automatic chunking of large inserts to stay under the 65,535-parameter-per-statement limit (max 13,107 rows per chunk with 5 params/row) |
-| **Automated testing** | 19 tests using pg-mem (in-memory PostgreSQL emulator), covering health, ingestion, validation, batching, and idempotency |
+> Benchmark is a local Docker result, not production capacity. Results vary between runs (50,839–52,247 events/sec observed).
 
-## Resume Bullet Points
+## Tender AI
 
-- Built a batch-oriented telecom log ingestion service (Node.js, Fastify, TypeScript, PostgreSQL) that processed 100,000 events at 52,247 events/sec in a local Docker benchmark with 0 failures
-- Implemented an async in-memory buffer with configurable size and time-based flushing (500 events or 100ms), reducing 100,000 individual database round-trips to 200 bulk INSERT statements
-- Solved the PostgreSQL 65,535-parameter-per-statement limit by chunking large batch inserts into 13,107-row groups, and removed the unnecessary `RETURNING` clause to reduce result-set overhead
-- Designed a hybrid PostgreSQL schema (indexed columns + JSONB payload with B-tree and GIN indexes) and idempotent ingestion via `ON CONFLICT DO NOTHING` for duplicate event handling
-- Wrote 19 automated tests using pg-mem (in-memory PostgreSQL) covering validation, batching, idempotency, and health checks — all passing without an external database
+A document-AI workspace for tender intelligence and bid preparation. Accepts tender PDFs, extracts structured information with page references, matches company evidence to requirements, tracks bid preparation, and exports submission packages.
 
-> This is a **local Docker benchmark**, not production telecom capacity.
+**Tech stack:** Python, FastAPI, SQLAlchemy, PostgreSQL/SQLite, Alembic, pypdf, Pydantic, pytest
+
+**Key results:**
+- 177 automated tests passing
+- Dockerfile with non-root user, health/readiness probes, security headers
+
+**Engineering work:**
+- Built document processing pipeline: PDF validation (header + size), page-level text extraction with `pypdf`, overlapping chunk splitting with page identity retention
+- Implemented deterministic analysis (regex-based extraction of dates, requirements, risks, clarifications) with optional Ollama LLM integration; added grounding validation to verify LLM claims against extracted sources before persistence
+- Designed evidence retrieval using lexical search (keyword + hybrid scoring) over chunked documents; implemented conservative "potentially relevant" suggestions that require explicit user linking (no automatic linking)
+- Developed bid workspace: requirement tracking, clarification management, document linking, readiness state, ZIP submission manifest export
+- Implemented authentication: scrypt password hashing with per-user salt, server-side sessions with HMAC token hashing, workspace ownership enforcement on all API routes
+- Integrated Stripe test-mode billing: checkout, customer portal, webhook-verified subscription lifecycle, idempotent billing events via BillingEvent table
+- Added storage abstraction: local filesystem and S3-compatible (boto3) with path-traversal protection
+- Implemented optional RQ/Redis background processing with FastAPI BackgroundTasks fallback
+- Contributed to production-readiness audit and Alembic migration baseline (30 tables)
+
+> This is a single-machine portfolio project. Production scaling, OpenAI hosted LLM provider, structured logging, metrics, and rate limiting on auth endpoints are documented as future work but not yet implemented.

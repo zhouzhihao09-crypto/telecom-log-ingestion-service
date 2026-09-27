@@ -1,86 +1,118 @@
 # Demo Walkthrough
 
-A 60–90 second demonstration of the Telecom Log Ingestion Service.
+A practical 60–90 second demonstration of the Telecom Log Ingestion Service.
 
-## 1. Introduction
+## Prerequisites
 
-The Telecom Log Ingestion Service is a Node.js/TypeScript backend that ingests telecom SMS and data usage events over HTTP, validates them, buffers them in memory, and writes them to PostgreSQL in batches. Built with Fastify, PostgreSQL, and Docker Compose.
+- Docker Desktop running
+- PowerShell (Windows) or any terminal
+- This project checked out locally
 
-## 2. Architecture
+## Step 1: Open the Project
 
-```
-Log Generator → Fastify API → Validation → Async Buffer → Batch Processor → PostgreSQL
-```
+Open the project folder and the GitHub repo side by side:
 
-- **Incoming**: SMS and DATA_USAGE events arrive as HTTP POST requests
-- **Validated**: Each event is checked against a type schema before storage
-- **Buffered**: Events accumulate in an in-memory buffer (flush on `BATCH_SIZE` or `BATCH_INTERVAL_MS`)
-- **Batched**: Flushes become bulk `INSERT ... ON CONFLICT DO NOTHING` statements
-- **Stored**: PostgreSQL with indexed columns and JSONB payload
+- Local: `C:\Users\zhiha\OneDrive - Ngee Ann Polytechnic\Desktop\real world problems\Telecom Log Ingestion Service`
+- GitHub: `https://github.com/zhouzhihao09-crypto/telecom-log-ingestion-service`
 
-## 3. Starting Docker
+## Step 2: Start Docker
 
-```bash
-docker compose up --build
+**Command:**
+```powershell
+$env:PATH = "C:\Program Files\Docker\Docker\resources\bin;$env:PATH"; docker compose up --build
 ```
 
-The API starts on `http://localhost:3000` and PostgreSQL on `localhost:5432`.
-
-## 4. Health Check
-
-```bash
-curl localhost:3000/health
-# {"status":"ok","database":"ok"}
+**What to show:** Both containers start and become healthy:
+```
+Container telecom-postgres  Up ... (healthy)
+Container telecom-ingestion Up ... (healthy)
 ```
 
-Confirms both the service and the database are reachable.
+**What to say:** "One command starts both PostgreSQL and the Fastify API. The database initializes automatically with the schema."
 
-## 5. Event Ingestion
+## Step 3: Health Check
 
-```bash
-curl -X POST localhost:3000/api/events \
-  -H 'Content-Type: application/json' \
-  -d '{"eventId":"demo-001","eventType":"SMS","timestamp":"2026-09-17T10:00:00.000Z","subscriberId":"S1234567A","sourceNumber":"+6591234567","destinationNumber":"+6587654321","messageSize":120,"status":"DELIVERED"}'
-# {"accepted":1}
+**Command:**
+```powershell
+Invoke-RestMethod -Uri http://localhost:3000/health
 ```
 
-Accepts single events or batches (`{"events": [...]}` or a JSON array).
-
-## 6. Benchmark
-
-```bash
-npm run benchmark
+**What to show:**
+```
+status  database
+------  --------
+ok      ok
 ```
 
-Sends **100,000 events** (batch size 500, concurrency 5). Results:
+**What to say:** "The health endpoint confirms both the service and database are reachable."
 
-| Metric | Result |
-|---|---|
-| Throughput | 52,247 events/sec |
-| Duration | 1.91 s |
-| Failed requests | 0 |
-| Database rows verified | 100,000 |
+## Step 4: Event Ingestion (Single + Batch)
 
-## 7. PostgreSQL Verification
-
-```bash
-docker compose exec db psql -U postgres -d telecom_logs -c "SELECT count(*) FROM telecom_events;"
-#  count
-# -------
-# 100000
+**Command (single event):**
+```powershell
+Invoke-RestMethod -Uri http://localhost:3000/api/events -Method Post -ContentType 'application/json' -Body '{"eventId":"demo-001","eventType":"SMS","timestamp":"2026-09-17T10:00:00.000Z","subscriberId":"S1234567A","sourceNumber":"+6591234567","destinationNumber":"+6587654321","messageSize":120,"status":"DELIVERED"}'
 ```
 
-All 100,000 events are confirmed stored.
-
-## 8. Key Engineering Challenge
-
-PostgreSQL limits prepared statements to **65,535 bound parameters**. With 5 parameters per event row, the `bulkInsert` method automatically chunks large batches into groups of at most 13,107 rows, preventing the `bind message has N parameter formats` error. The `RETURNING` clause was also removed — the service only needs `rowCount`, not the actual row data.
-
-## 9. Tests
-
-```bash
-npm test
-# 19/19 tests pass
+**Command (batch of 2):**
+```powershell
+Invoke-RestMethod -Uri http://localhost:3000/api/events -Method Post -ContentType 'application/json' -Body '{"events":[{"eventId":"demo-002","eventType":"SMS","timestamp":"2026-09-17T10:00:01.000Z","subscriberId":"S1234567A","sourceNumber":"+6591234567","destinationNumber":"+6587654321","messageSize":95,"status":"DELIVERED"},{"eventId":"demo-003","eventType":"DATA_USAGE","timestamp":"2026-09-17T10:00:02.000Z","subscriberId":"S1234567A","bytesUsed":1048576,"networkType":"5G"}]}'
 ```
 
-Tests use pg-mem (in-memory PostgreSQL), so no external database is required.
+**What to show:** Both return `202 Accepted` with `{"accepted": N}`.
+
+**What to say:** "Events are validated, buffered asynchronously, and written to PostgreSQL in batches. The API returns 202 Accepted immediately — the insert happens in the background."
+
+## Step 5: Benchmark
+
+**Command:**
+```powershell
+npx.cmd tsx scripts/benchmark.ts
+```
+
+**What to show:** The final result table:
+```
+=== Benchmark Results ===
+Events: 100000
+Batches: 200
+Duration: ~1.91 seconds
+Throughput: ~52,247 events/sec
+Failed requests: 0
+```
+
+**What to say:** "This is a **local Docker benchmark** — 100,000 events at 52K per second with zero failures. Not production telecom capacity — that requires distributed infrastructure."
+
+## Step 6: PostgreSQL Verification
+
+**Command:**
+```powershell
+$env:PATH = "C:\Program Files\Docker\Docker\resources\bin;$env:PATH"; docker compose exec db psql -U postgres -d telecom_logs -c "SELECT count(*) FROM telecom_events;"
+```
+
+**What to show:** 100,003 rows (100,000 from benchmark + 3 from the manual tests).
+
+**What to say:** "All 100,000 events are confirmed in PostgreSQL — no data loss."
+
+## Step 7: Key Engineering Challenge
+
+**What to say:** "Events are validated, buffered asynchronously, and written to PostgreSQL in batches."
+
+"Large inserts can exceed PostgreSQL's parameter limit — PostgreSQL limits prepared statements to 65,535 bound parameters. Since each event row uses 5 parameters, a single INSERT can't safely exceed 13,107 rows. I implemented safe chunking in the `bulkInsert` method, which automatically splits large batches into sub-13,107-row groups."
+
+"I also removed the `RETURNING` clause — the service only needs the count of inserted rows (via `rowCount`), not the actual row data, so skipping the result set reduces memory and network overhead."
+
+## Step 8: Tests (Optional, if time permits)
+
+**Command:**
+```powershell
+npm.cmd test
+```
+
+**What to show:** "19/19 tests pass."
+
+**What to say:** "Tests use pg-mem — an in-memory PostgreSQL emulator, so no external database is needed."
+
+## Cleanup
+
+```powershell
+$env:PATH = "C:\Program Files\Docker\Docker\resources\bin;$env:PATH"; docker compose down --volumes
+```
